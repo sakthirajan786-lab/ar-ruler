@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AR Ruler</string>
+    <string name="readout_empty">--</string>
+    <string name="add_point">Add point</string>
+    <string name="undo">Undo</string>
+    <string name="clear">Clear all</string>
+    <string name="change_unit">Change unit</string>
+
+    <string name="hint_initializing">Move your phone slowly to start tracking</string>
+    <string name="hint_too_dark">Too dark — find better lighting</string>
+    <string name="hint_too_fast">Moving too fast — slow down</string>
+    <string name="hint_no_features">Point at a surface with more texture or detail</string>
+    <string name="hint_camera_unavailable">Camera unavailable — another app may be using it</string>
+    <string name="hint_bad_state">Tracking lost — move slowly to recover</string>
+    <string name="hint_scan">Slowly move your phone to detect a surface</string>
+    <string name="hint_aim">Aim the circle at a surface</string>
+    <string name="hint_start">Tap + to set the start point</string>
+    <string name="hint_end">Tap + to set the end point</string>
+    <string name="hint_done">Tap + to start a new measurement</string>
+    <string name="hint_no_surface_for_point">No surface under the circle — aim at a surface</string>
+
+    <string name="perm_title">Camera permission needed</string>
+    <string name="perm_message">AR Ruler uses the camera to see and measure the world around you. Nothing is recorded or uploaded.</string>
+    <string name="open_settings">Open settings</string>
+    <string name="exit">Exit</string>
+    <string name="ok">OK</string>
+    <string name="error_title">AR not available</string>
+    <string name="err_not_compatible">This device does not support ARCore, so AR measuring is not possible.</string>
+    <string name="err_declined">Google Play Services for AR is required to measure. Please install it and try again.</string>
+    <string name="err_update_arcore">Please update Google Play Services for AR from the Play Store.</string>
+    <string name="err_update_app">This app needs an update to work with your version of ARCore.</string>
+    <string name="err_camera">The camera could not be opened. Close other camera apps and try again.</string>
+    <string name="err_generic">AR could not start: %1$s</string>
+</resources>
