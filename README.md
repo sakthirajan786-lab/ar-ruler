@@ -3,7 +3,7 @@
 A simple, fast AR tape measure built on Google ARCore.
 
 ## Features
-- Aim the centre circle at a surface (turns green when locked on), tap **+** for the start point, tap **+** again for the end point.
+- Aim the centre circle at any surface — floors, tables, walls, furniture, objects. It turns green when locked on, yellow when the point is estimated from nearby detail or from the surface you started on, tap **+** for the start point, tap **+** again for the end point.
 - Live dashed "rubber band" reading while you move to the end point, with jitter smoothing.
 - Multiple measurements on screen at once, each with its own label.
 - Units: cm, m, in, ft-in (tap the unit button; your choice is remembered).

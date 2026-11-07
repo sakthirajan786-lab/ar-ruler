@@ -24,10 +24,13 @@ class OverlayState(
     val points: FloatArray,
     val pointCount: Int,
     val lines: List<OverlayLine>,
-    val reticleOnSurface: Boolean
+    val reticleMode: Int
 ) {
     companion object {
-        val EMPTY = OverlayState(FloatArray(0), 0, emptyList(), false)
+        const val RETICLE_NONE = 0
+        const val RETICLE_ESTIMATED = 1
+        const val RETICLE_LOCKED = 2
+        val EMPTY = OverlayState(FloatArray(0), 0, emptyList(), RETICLE_NONE)
     }
 }
 
@@ -141,7 +144,7 @@ class MeasureOverlayView @JvmOverloads constructor(
             drawLabel(canvas, line, currentUnit)
         }
 
-        drawReticle(canvas, s.reticleOnSurface)
+        drawReticle(canvas, s.reticleMode)
     }
 
     private fun drawLabel(canvas: Canvas, line: OverlayLine, unit: MeasureUnit) {
@@ -161,10 +164,15 @@ class MeasureOverlayView @JvmOverloads constructor(
         canvas.drawText(text, cx, baseline, labelText)
     }
 
-    private fun drawReticle(canvas: Canvas, onSurface: Boolean) {
+    private fun drawReticle(canvas: Canvas, mode: Int) {
         val cx = width / 2f
         val cy = height / 2f
-        val color = if (onSurface) accent else 0xB3FFFFFF.toInt()
+        val onSurface = mode != OverlayState.RETICLE_NONE
+        val color = when (mode) {
+            OverlayState.RETICLE_LOCKED -> accent
+            OverlayState.RETICLE_ESTIMATED -> 0xFFFFD54F.toInt()
+            else -> 0xB3FFFFFF.toInt()
+        }
         reticlePaint.color = color
         reticleDot.color = color
         val r = 20f * density

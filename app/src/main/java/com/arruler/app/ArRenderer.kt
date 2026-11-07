@@ -21,6 +21,9 @@ import com.google.ar.core.TrackingState
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -42,6 +45,8 @@ class ArRenderer(
 
     /** Measurements are stored as consecutive pairs: (0,1), (2,3), ... */
     private val anchors = ArrayList<Anchor>()
+    /** Surface normal recorded for each anchor (null if unknown). Same indices as [anchors]. */
+    private val normals = ArrayList<FloatArray?>()
     private val addRequested = AtomicBoolean(false)
     private var noSurfaceFlashUntil = 0L
 
@@ -54,6 +59,13 @@ class ArRenderer(
     private val clipB = FloatArray(4)
     private val screen = FloatArray(4)
     private val normal = FloatArray(3)
+    private val invViewProj = FloatArray(16)
+    private val ndcIn = FloatArray(4)
+    private val rayNear = FloatArray(4)
+    private val rayFar = FloatArray(4)
+    private val rayOrigin = FloatArray(3)
+    private val rayDir = FloatArray(3)
+    private val samplePx = 32f * context.resources.displayMetrics.density
 
     private val smoothed = FloatArray(3)
     private var hasSmoothed = false
@@ -72,13 +84,17 @@ class ArRenderer(
 
     /** Must run on the GL thread (use GLSurfaceView.queueEvent). */
     fun undoOnGlThread() {
-        if (anchors.isNotEmpty()) anchors.removeAt(anchors.size - 1).detach()
+        if (anchors.isNotEmpty()) {
+            anchors.removeAt(anchors.size - 1).detach()
+            normals.removeAt(normals.size - 1)
+        }
     }
 
     /** Must run on the GL thread (use GLSurfaceView.queueEvent). */
     fun clearOnGlThread() {
         for (a in anchors) a.detach()
         anchors.clear()
+        normals.clear()
     }
 
     // ---- GLSurfaceView.Renderer ----
@@ -136,17 +152,18 @@ class ArRenderer(
         camera.getViewMatrix(viewMatrix, 0)
         camera.getProjectionMatrix(projMatrix, 0, NEAR, FAR)
         Matrix.multiplyMM(viewProj, 0, projMatrix, 0, viewMatrix, 0)
+        val haveInverse = Matrix.invertM(invViewProj, 0, viewProj, 0)
 
         if (!planesSeen) {
             planesSeen = s.getAllTrackables(Plane::class.java)
                 .any { it.trackingState == TrackingState.TRACKING }
         }
 
-        val hit = findSurfaceHit(frame, camera)
-        if (hit != null) updateSmoothed(hit.hitPose) else hasSmoothed = false
+        val hit = findTarget(frame, camera, haveInverse)
+        if (hit != null) updateSmoothed(hit.x, hit.y, hit.z) else hasSmoothed = false
 
         if (addRequested.getAndSet(false)) {
-            if (hit != null) addAnchor(hit) else noSurfaceFlashUntil = System.currentTimeMillis() + 1800
+            if (hit != null) addAnchor(s, hit) else noSurfaceFlashUntil = System.currentTimeMillis() + 1800
         }
 
         // Build overlay snapshot.
@@ -201,7 +218,12 @@ class ArRenderer(
             }
         }
 
-        overlay.publish(OverlayState(points, pointCount, lines, hit != null))
+        val reticleMode = when {
+            hit == null -> OverlayState.RETICLE_NONE
+            hit.estimated -> OverlayState.RETICLE_ESTIMATED
+            else -> OverlayState.RETICLE_LOCKED
+        }
+        overlay.publish(OverlayState(points, pointCount, lines, reticleMode))
 
         val readout = currentReadout(liveMeters ?: lastCompleteMeters)
         val hint = when {
@@ -215,20 +237,130 @@ class ArRenderer(
         postStatus(readout, hint)
     }
 
-    /** Finds the closest reliable surface under the centre of the screen. */
-    private fun findSurfaceHit(frame: Frame, camera: Camera): HitResult? {
-        val hits = frame.hitTest(viewWidth / 2f, viewHeight / 2f)
-        for (hit in hits) {
-            val ok = when (val trackable = hit.trackable) {
-                is Plane -> trackable.isPoseInPolygon(hit.hitPose) &&
-                    distanceToPlane(hit.hitPose, camera.pose) > 0f
-                is DepthPoint -> true
-                is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                else -> false
+    /** A 3D target under the reticle. [hit] is null when the position was estimated. */
+    private class Target(
+        val x: Float,
+        val y: Float,
+        val z: Float,
+        val hit: HitResult?,
+        val normal: FloatArray?,
+        val estimated: Boolean
+    )
+
+    /**
+     * Finds what the centre of the screen is pointing at, trying in order:
+     *  1. A direct ARCore hit: detected plane (floor, table, wall), depth point, or any
+     *     tracked feature point — so textured objects and walls work without a plane.
+     *  2. The surface the current measurement started on, extended (lets you finish a
+     *     measurement across a plain, featureless wall).
+     *  3. Feature points just around the centre, projected onto the centre ray.
+     */
+    private fun findTarget(frame: Frame, camera: Camera, haveInverse: Boolean): Target? {
+        val cx = viewWidth / 2f
+        val cy = viewHeight / 2f
+
+        for (hit in frame.hitTest(cx, cy)) {
+            if (!isUsable(hit, camera)) continue
+            val p = hit.hitPose
+            return Target(p.tx(), p.ty(), p.tz(), hit, normalOf(hit), estimated = false)
+        }
+
+        if (!haveInverse || !screenRay(cx, cy)) return null
+
+        // 2. Extend the start point's surface.
+        if (anchors.size % 2 == 1) {
+            val start = anchors[anchors.size - 1]
+            val n = normals[normals.size - 1]
+            if (n != null && start.trackingState == TrackingState.TRACKING) {
+                val sp = start.pose
+                val denom = n[0] * rayDir[0] + n[1] * rayDir[1] + n[2] * rayDir[2]
+                if (abs(denom) > 0.1f) {
+                    val t = (n[0] * (sp.tx() - rayOrigin[0]) +
+                        n[1] * (sp.ty() - rayOrigin[1]) +
+                        n[2] * (sp.tz() - rayOrigin[2])) / denom
+                    if (t > NEAR && t < MAX_HIT_DISTANCE) {
+                        return Target(
+                            rayOrigin[0] + rayDir[0] * t,
+                            rayOrigin[1] + rayDir[1] * t,
+                            rayOrigin[2] + rayDir[2] * t,
+                            null, n, estimated = true
+                        )
+                    }
+                }
             }
-            if (ok && hit.distance <= MAX_HIT_DISTANCE) return hit
+        }
+
+        // 3. Nearby feature points, depth taken along the centre ray.
+        for (k in 0 until SAMPLE_DIRECTIONS) {
+            val angle = (2.0 * Math.PI * k / SAMPLE_DIRECTIONS).toFloat()
+            val sx = cx + cos(angle) * samplePx
+            val sy = cy + sin(angle) * samplePx
+            for (hit in frame.hitTest(sx, sy)) {
+                if (!isUsable(hit, camera)) continue
+                val p = hit.hitPose
+                val depth = (p.tx() - rayOrigin[0]) * rayDir[0] +
+                    (p.ty() - rayOrigin[1]) * rayDir[1] +
+                    (p.tz() - rayOrigin[2]) * rayDir[2]
+                if (depth > NEAR && depth < MAX_HIT_DISTANCE) {
+                    return Target(
+                        rayOrigin[0] + rayDir[0] * depth,
+                        rayOrigin[1] + rayDir[1] * depth,
+                        rayOrigin[2] + rayDir[2] * depth,
+                        null, normalOf(hit), estimated = true
+                    )
+                }
+                break
+            }
         }
         return null
+    }
+
+    private fun isUsable(hit: HitResult, camera: Camera): Boolean {
+        if (hit.distance > MAX_HIT_DISTANCE) return false
+        return when (val trackable = hit.trackable) {
+            is Plane -> trackable.trackingState == TrackingState.TRACKING &&
+                trackable.isPoseInPolygon(hit.hitPose) &&
+                distanceToPlane(hit.hitPose, camera.pose) > 0f
+            is DepthPoint -> true
+            // Any tracked feature point is a real spot on a real surface; orientation
+            // doesn't matter for measuring distance.
+            is Point -> trackable.trackingState == TrackingState.TRACKING
+            else -> false
+        }
+    }
+
+    /** Surface normal of the hit if ARCore knows it, else null. */
+    private fun normalOf(hit: HitResult): FloatArray? {
+        val trackable = hit.trackable
+        val known = trackable is Plane || trackable is DepthPoint ||
+            (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)
+        if (!known) return null
+        val n = FloatArray(3)
+        hit.hitPose.getTransformedAxis(1, 1.0f, n, 0)
+        return n
+    }
+
+    /** Fills rayOrigin / rayDir (world space) for a screen pixel. */
+    private fun screenRay(px: Float, py: Float): Boolean {
+        val nx = px / viewWidth * 2f - 1f
+        val ny = 1f - py / viewHeight * 2f
+        ndcIn[0] = nx; ndcIn[1] = ny; ndcIn[2] = -1f; ndcIn[3] = 1f
+        Matrix.multiplyMV(rayNear, 0, invViewProj, 0, ndcIn, 0)
+        ndcIn[2] = 1f
+        Matrix.multiplyMV(rayFar, 0, invViewProj, 0, ndcIn, 0)
+        if (abs(rayNear[3]) < 1e-7f || abs(rayFar[3]) < 1e-7f) return false
+        for (k in 0..2) {
+            rayNear[k] /= rayNear[3]
+            rayFar[k] /= rayFar[3]
+        }
+        val dx = rayFar[0] - rayNear[0]
+        val dy = rayFar[1] - rayNear[1]
+        val dz = rayFar[2] - rayNear[2]
+        val len = sqrt(dx * dx + dy * dy + dz * dz)
+        if (len < 1e-6f) return false
+        rayOrigin[0] = rayNear[0]; rayOrigin[1] = rayNear[1]; rayOrigin[2] = rayNear[2]
+        rayDir[0] = dx / len; rayDir[1] = dy / len; rayDir[2] = dz / len
+        return true
     }
 
     private fun distanceToPlane(planePose: Pose, cameraPose: Pose): Float {
@@ -238,22 +370,24 @@ class ArRenderer(
             (cameraPose.tz() - planePose.tz()) * normal[2]
     }
 
-    private fun addAnchor(hit: HitResult) {
+    private fun addAnchor(s: Session, target: Target) {
         try {
             // Keep memory and tracking cost bounded: drop the oldest measurement.
             if (anchors.size >= MAX_POINTS && anchors.size % 2 == 0) {
-                anchors.removeAt(0).detach()
-                anchors.removeAt(0).detach()
+                anchors.removeAt(0).detach(); normals.removeAt(0)
+                anchors.removeAt(0).detach(); normals.removeAt(0)
             }
-            anchors.add(hit.createAnchor())
+            val anchor = target.hit?.createAnchor()
+                ?: s.createAnchor(Pose.makeTranslation(target.x, target.y, target.z))
+            anchors.add(anchor)
+            normals.add(target.normal)
         } catch (e: Exception) {
             Log.w(TAG, "Could not create anchor", e)
         }
     }
 
     /** Low-pass filter on the reticle position so the live reading doesn't jitter. */
-    private fun updateSmoothed(pose: Pose) {
-        val x = pose.tx(); val y = pose.ty(); val z = pose.tz()
+    private fun updateSmoothed(x: Float, y: Float, z: Float) {
         if (!hasSmoothed) {
             smoothed[0] = x; smoothed[1] = y; smoothed[2] = z
             hasSmoothed = true
@@ -360,5 +494,6 @@ class ArRenderer(
         const val MAX_HIT_DISTANCE = 10f
         const val SMOOTHING = 0.35f
         const val JUMP_RESET_SQ = 0.15f * 0.15f
+        const val SAMPLE_DIRECTIONS = 8
     }
 }

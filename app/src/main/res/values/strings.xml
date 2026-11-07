@@ -13,8 +13,8 @@
     <string name="hint_no_features">Point at a surface with more texture or detail</string>
     <string name="hint_camera_unavailable">Camera unavailable — another app may be using it</string>
     <string name="hint_bad_state">Tracking lost — move slowly to recover</string>
-    <string name="hint_scan">Slowly move your phone to detect a surface</string>
-    <string name="hint_aim">Aim the circle at a surface</string>
+    <string name="hint_scan">Move your phone slowly side to side to scan the area</string>
+    <string name="hint_aim">Aim at an edge, corner or patterned spot — plain walls need some detail</string>
     <string name="hint_start">Tap + to set the start point</string>
     <string name="hint_end">Tap + to set the end point</string>
     <string name="hint_done">Tap + to start a new measurement</string>
